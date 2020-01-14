@@ -11,8 +11,13 @@ import pandas as pd
 import os.path
 import config
 
+max_len = 300
+batch_size = 64
+embedding_dim = 100
+max_feature = 20000
 
-def text_cnn(maxlen=150, max_features=20000, embed_size=100):
+
+def text_cnn(maxlen=max_len, max_features=max_feature, embed_size=embedding_dim):
     conment_seq = Input(shape=[maxlen], name='x_seq')
     emb_comment = Embedding(max_features, embed_size)(conment_seq)
     convs = []
@@ -29,14 +34,14 @@ def text_cnn(maxlen=150, max_features=20000, embed_size=100):
 
     output = Dense(units=3, activation='softmax')(output)
     model = Model([conment_seq], output)
-    a = optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-8)
+    a = optimizers.Adam(lr=2e-4, beta_1=0.9, beta_2=0.999, epsilon=1e-8)
     model.compile(loss="categorical_crossentropy", optimizer=a, metrics=['accuracy'])
     return model
 
 
 def tokenize(lang, max_len):
     # 这里max_features是要挑选最常用的词汇
-    tokenizer = Tokenizer(filters='', lower=False, num_words=20000)
+    tokenizer = Tokenizer(filters='', lower=False, num_words=max_feature)
     tokenizer.fit_on_texts(lang)
     # 114k 的词典
     # 注意：keras API的word_index是从1开始的，0要预留出来，因为进行了补零操作
@@ -50,7 +55,7 @@ history = pd.read_csv(os.path.join(config.output_dir, 'history.csv'), encoding='
 data = list(history.itertuples(index=False))
 x, y = zip(*data)
 y_tag = []
-x, tokenizer, word_index = tokenize(x, 150)
+x, tokenizer, word_index = tokenize(x, max_len)
 for tag in y:
     if tag == 'gd':
         y_tag.append([1, 0, 0])
@@ -62,11 +67,11 @@ y_tag = np.array(y_tag)
 x_train, x_test, y_train, y_test = train_test_split(x, y_tag)
 
 
-model_class = text_cnn(150, 20000, 100)
+model_class = text_cnn(max_len, max_feature, embedding_dim)
 model_class.summary()
 
 history = model_class.fit(x_train, y_train,
-                          batch_size=64, epochs=3, validation_split=0.1)
+                          batch_size=batch_size, epochs=5, validation_split=0.1)
 y_pre = model_class.predict(x_test)
 
 print(model_class.evaluate(x_test, y_test))

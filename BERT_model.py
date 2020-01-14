@@ -13,11 +13,15 @@ from bert4keras.optimizers import Adam
 from bert4keras.snippets import sequence_padding, DataGenerator
 
 
-maxlen = 50
+maxlen = 150
 batch_size = 16
-config_path = 'E:/Pretrained_Model/chinese_L-12_H-768_A-12/bert_config.json'
-checkpoint_path = 'E:/Pretrained_Model/chinese_L-12_H-768_A-12/bert_model.ckpt'
-dict_path = 'E:/Pretrained_Model/chinese_L-12_H-768_A-12/vocab.txt'
+# config_path = 'E:/Pretrained_Model/chinese_L-12_H-768_A-12/bert_config.json'
+# checkpoint_path = 'E:/Pretrained_Model/chinese_L-12_H-768_A-12/bert_model.ckpt'
+# dict_path = 'E:/Pretrained_Model/chinese_L-12_H-768_A-12/vocab.txt'
+
+config_path = 'E:/Pretrained_Model/albert_small_zh_google/albert_config_small_google.json'
+checkpoint_path = 'E:/Pretrained_Model/albert_small_zh_google/albert_model.ckpt'
+dict_path = 'E:/Pretrained_Model/albert_small_zh_google/vocab.txt'
 
 
 def label_passer(labels):
@@ -43,35 +47,12 @@ def load_data(filename):
 
 # 加载数据集
 train_data, label_dict = load_data("D:/Workstations/Baidu-QuestionDB-Classification/Data/Output/history.csv")
-# valid_data = load_data('datasets/lcqmc/lcqmc.valid.data')
-# test_data = load_data('datasets/lcqmc/lcqmc.test.data')
 
+# 分割数据集
 text_train, text_valid = train_test_split(train_data, random_state=2019, test_size=0.1)
 
 # 建立分词器
 tokenizer = Tokenizer(dict_path, do_lower_case=False)
-
-
-class data_generator(DataGenerator):
-    """数据生成器
-    """
-    def __iter__(self, random=False):
-        idxs = list(range(len(self.data)))
-        if random:
-            np.random.shuffle(idxs)
-        batch_token_ids, batch_segment_ids, batch_labels = [], [], []
-        for i in idxs:
-            text1, text2, label = self.data[i]
-            token_ids, segment_ids = tokenizer.encode(text1, text2, max_length=maxlen)
-            batch_token_ids.append(token_ids)
-            batch_segment_ids.append(segment_ids)
-            batch_labels.append([label])
-            if len(batch_token_ids) == self.batch_size or i == idxs[-1]:
-                batch_token_ids = sequence_padding(batch_token_ids)
-                batch_segment_ids = sequence_padding(batch_segment_ids)
-                batch_labels = sequence_padding(batch_labels)
-                yield [batch_token_ids, batch_segment_ids], batch_labels
-                batch_token_ids, batch_segment_ids, batch_labels = [], [], []
 
 
 # 加载预训练模型
@@ -79,7 +60,8 @@ bert = build_bert_model(
     config_path=config_path,
     checkpoint_path=checkpoint_path,
     with_pool=True,
-    return_keras_model=True
+    return_keras_model=True,
+    model='albert'
 )
 
 output = tf.keras.layers.Dropout(rate=0.1)(bert.output)
@@ -110,16 +92,21 @@ def embedding(data):
     return batch_token_ids, batch_segment_ids, batch_labels
 
 
-# 转换数据集
-# train_generator = data_generator(text_train, batch_size)
-# valid_generator = data_generator(text_valid, batch_size)
-# test_generator = data_generator(test_data, batch_size)
+class Tokenizer(tf.keras.layers.Layer):
+    def __init__(self, tokenizer):
+        super(Tokenizer, self).__init__()
+        self.tokenizer = tokenizer
+    @tf.function
+    def call(self, text):
+        token_id, segment_id = tokenizer.encode(text)
+        return token_id, segment_id
+
 
 train = embedding(text_train)
 train = tf.data.Dataset.from_tensor_slices(((train[0], train[1]), train[2])).batch(batch_size, drop_remainder=True)
 
 valid = embedding(text_train)
-valid = tf.data.Dataset.from_tensor_slices(((valid[0], valid[1]), valid[2])).batch(batch_size, drop_remainder=True)
+valid = tf.data.Dataset.from_tensor_slices(((valid[0], valid[1]), valid[2])).batch(batch_size,drop_remainder=True)
 
 
 def evaluate(data):
@@ -128,7 +115,9 @@ def evaluate(data):
         y_pred = model.predict(x_true).argmax(axis=1)
         y_true = y_true[:, 0]
         total += len(y_true)
-        right += (y_true == y_pred).sum()
+        mask = tf.math.equal(y_true, y_pred)
+        mask = tf.cast(mask, dtype=tf.float32)
+        right += tf.reduce_sum(mask)
     return right / total
 
 
@@ -140,20 +129,26 @@ class Evaluator(keras.callbacks.Callback):
         with open('Data/Output/BERT/label_dict.txt', 'w') as f:
             for label, id in label_dict.items():
                 f.write(str(label)+'\t'+str(id))
+                f.write('\n')
 
     def on_epoch_end(self, epoch, logs=None):
         val_acc = evaluate(valid)
         if val_acc > self.best_val_acc:
             self.best_val_acc = val_acc
-            model.save_weights('Data/Output/BERT/best_model.weights')
+            model.save_weights('Data/Output/BERT/best_weights', save_format='tf')
         # test_acc = evaluate(test_generator)
         print(u'val_acc: %05f, best_val_acc: %05f, test_acc: None\n'
               % (val_acc, self.best_val_acc))
+    def on_train_end(self, logs=None):
+        model.save('Data/Output/BERT/pb_model/', save_format='tf')
 
 
 evaluator = Evaluator()
-tensorboard = tf.keras.callbacks.TensorBoard("Data/Output/BERT/logs", update_freq='batch')
-model.fit(train, epochs=2, validation_data=valid, callbacks=[evaluator,tensorboard])
+model = tf.keras.models.load_model("Data/Output/BERT/pb_model")
+model.summary()
+model.load_weights('Data/Output/BERT/best_weights')
+# model.save('Data/Output/BERT/pb_model/', save_format='tf')
+tensorboard = tf.keras.callbacks.TensorBoard("Data/Output/BERT/logs/", update_freq=100)
+model.fit(train, epochs=10, validation_data=valid, callbacks=[evaluator])
 
-model.load_weights('Data/Output/BERT/best_model.weights')
 # print(u'final test acc: %05f\n' % (evaluate(test_generator))
